@@ -4,6 +4,7 @@ import { FEHistoryWorker } from './FEHistoryWorker.js';
 export class FECaptureSession {
   history = new FEHistoryWorker();
   recording = false;
+  waitingForDirect = false;
   session;
   error;
   documentId;
@@ -58,10 +59,13 @@ export class FECaptureSession {
     this.committed = 0;
     this.ack = undefined;
     this.batchId = undefined;
+    this.waitingForDirect = false;
     this.recording = true;
     this.reloading = reload;
     try {
-      await this.page(reload ? 'reload' : 'start', { sessionId });
+      const reply = await this.page(reload ? 'reload' : 'start', { sessionId });
+
+      this.waitingForDirect = !reload && reply.state.waitingForDirect === true;
       if (reload) {
         this.documentId = undefined;
       }
@@ -85,9 +89,13 @@ export class FECaptureSession {
 
         if (this.reloading) {
           this.documentId = undefined;
-          const connected = await this.page('connect');
+          const { state } = await this.page('connect');
 
-          if (!connected.state.recording || connected.state.sessionId !== this.session.id) {
+          if (state.sessionId === this.session.id && !state.recording && state.error) {
+            return this.fail(state.error);
+          }
+
+          if (!state.recording || state.sessionId !== this.session.id) {
             throw new Error('Ожидание захвата FE в новом документе');
           }
         }
@@ -100,6 +108,7 @@ export class FECaptureSession {
 
         this.ack = undefined;
         this.reloading = false;
+        this.waitingForDirect = reply.state.waitingForDirect === true;
         retryUntil = 0;
         const { chunk, session } = reply.value;
 

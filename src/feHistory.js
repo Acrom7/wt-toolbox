@@ -77,6 +77,7 @@ async function handle({ tabId, origin, documentId, request }) {
     value,
     state: {
       recording: viewer.recording,
+      waitingForDirect: viewer.recording && viewer.waitingForDirect,
       sessionId: viewer.session?.id,
       session: viewer.session,
       error: viewer.error,

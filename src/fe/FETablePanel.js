@@ -30,7 +30,8 @@ export class FETablePanel {
     this.shadow.innerHTML = `<style>${styles}</style>
       <section class="panel" aria-label="Сообщения FE" tabindex="-1">
         <header><strong>FE messages</strong><div class="recording-controls" role="group" aria-label="Управление записью"><button id="record" title="Начать новый сеанс записи входящих и исходящих сообщений FE; вывод DEBUG_FE_MESSAGES в консоль будет отключён">Начать запись</button><button id="reload" title="Сохранить текущую запись, перезагрузить вкладку и один раз включить запись до первого FE-сообщения">Перезагрузить и начать запись</button></div><select id="session" aria-label="Сеанс" title="Выберите сохранённый сеанс записи для просмотра"></select>
-          <button id="olderSessions" title="Загрузить предыдущие 100 сеансов">Более ранние сеансы</button><button id="latestSessions" title="Вернуться к последним 100 сеансам записи">Последние сеансы</button><button id="close" aria-label="Отключиться" title="Отключиться и остановить запись">×</button></header>
+          <button id="olderSessions" title="Загрузить предыдущие 100 сеансов">Более ранние сеансы</button><button id="latestSessions" title="Вернуться к последним 100 сеансам записи">Последние сеансы</button><button id="close" aria-label="Отключиться" title="Отключиться и остановить запись">×</button>
+          <span id="waitingForDirect" role="status" class="status" hidden>Уже открытые direct-соединения начнут записываться при переподключении. Чтобы записать их с авторизации, нажмите «Перезагрузить и начать запись».</span></header>
         <form><label>FE <input name="fe" placeholder="Все" inputmode="numeric" title="Номер FE. Пустое поле — все FE"></label>
           <div class="entity-picker"><label for="fe-entity">Сущность (Entity)</label><div class="entity-control"><input id="fe-entity" name="entity" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="fe-entities" autocomplete="off" placeholder="Все / введите имя" title="Точное имя сущности: выберите подсказку или введите своё. Пустое поле — все сущности"><button id="entityToggle" type="button" aria-label="Показать список сущностей" aria-controls="fe-entities" aria-expanded="false" title="Показать подходящие имена сущностей">▾</button></div><div id="fe-entities" class="entity-options" role="listbox" aria-label="Сущности" hidden></div></div>
           <label>Направление <select name="direction" title="IN — получено от FE, OUT — отправлено в FE"><option value="">Все</option><option>IN</option><option>OUT</option></select></label>
@@ -172,6 +173,8 @@ export class FETablePanel {
     this.element('#record').disabled = this.starting || this.clearing || this.reloading;
     this.element('#reload').disabled =
       this.starting || this.clearing || this.exporting || this.reloading;
+    this.element('#waitingForDirect').hidden =
+      !this.recorder.isRecording || !this.recorder.waitingForDirect;
     this.element('#remove').disabled =
       active || !this.session || this.exporting || this.clearing || this.reloading;
     this.element('#removeAll').disabled =
@@ -244,6 +247,7 @@ export class FETablePanel {
     try {
       await this.recorder.stop();
       await this.recorder.reload();
+      this.status('');
       await this.loadSessions(this.recorder.sessionId);
       this.reloading = false;
       this.update();
@@ -271,9 +275,7 @@ export class FETablePanel {
     try {
       await this.recorder.start();
       await this.loadSessions(this.recorder.sessionId);
-      this.status(
-        'Запись включена. Начальный фрагмент существующего direct-соединения пропускается при синхронизации',
-      );
+      this.status('Запись включена');
       if (navigator.storage?.persist) {
         void navigator.storage
           .persist()

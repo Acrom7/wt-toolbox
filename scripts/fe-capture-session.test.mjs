@@ -13,6 +13,8 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
   let workers = 0;
   let listener;
   let stateGate;
+  let pageState = {};
+  let onPull;
 
   globalThis.Worker = class {
     constructor() {
@@ -21,7 +23,7 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
     postMessage({ id, command }) {
       commands.push(command);
       const value =
-        command.method === 'start'
+        command.method === 'start' || command.method === 'ingest'
           ? { id: command.sessionId, count: 0, bytes: 0, startedAt: 1 }
           : command.method === 'sessions'
             ? []
@@ -39,6 +41,8 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
         },
       },
       async sendMessage({ payload: { documentId, request } }) {
+        const pull = request.method === 'pull' ? onPull?.(request.ack) : undefined;
+
         if (request.method === 'state' && stateGate) {
           await stateGate;
 
@@ -58,8 +62,12 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
           documentId: documentId ?? 'new-document',
           data: {
             version: 2,
-            value: { session: {} },
-            state: { recording: true, error: request.method === 'stop' ? stopError : undefined },
+            value: pull ?? { session: {} },
+            state: {
+              recording: true,
+              error: request.method === 'stop' ? stopError : undefined,
+              ...pageState,
+            },
           },
         };
       },
@@ -67,6 +75,41 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
   };
 
   try {
+    await t.test(
+      'direct waiting status follows the page and clears when recording stops',
+      async () => {
+        await import('../src/feHistory.js');
+        const request = (method) =>
+          new Promise((resolve) =>
+            listener(
+              { type: 'fe-history', payload: { tabId: 1, request: { method, token: 'direct' } } },
+              {},
+              resolve,
+            ),
+          );
+
+        try {
+          await request('connect');
+          pageState = { waitingForDirect: true };
+          assert.equal((await request('start')).data.state.waitingForDirect, true);
+          pageState = {};
+          await new Promise((resolve) => {
+            onPull = resolve;
+          });
+          await nextTurn();
+          assert.equal((await request('state')).data.state.waitingForDirect, false);
+          await request('stop');
+          pageState.waitingForDirect = true;
+          assert.equal((await request('start')).data.state.waitingForDirect, true);
+          assert.equal((await request('stop')).data.state.waitingForDirect, false);
+        } finally {
+          onPull = undefined;
+          pageState = {};
+          await request('close');
+          commands.length = 0;
+        }
+      },
+    );
     await t.test('new start waits for the old asynchronous failure cleanup', async () => {
       const viewer = new FECaptureSession(1, 'owner');
       let release;
@@ -138,6 +181,75 @@ test('capture cleanup, stop errors and delayed navigation preserve session owner
           );
         } finally {
           stopError = undefined;
+          await viewer.close();
+        }
+      },
+    );
+    await t.test('reload reports an early failure of its own session immediately', async () => {
+      const viewer = new FECaptureSession(1, 'owner');
+      const sessionId = 'reload-overflow';
+      const error = 'Превышен лимит раннего буфера FE';
+
+      viewer.session = { id: sessionId };
+      viewer.recording = true;
+      viewer.reloading = true;
+      pageState = { sessionId, recording: false, error };
+      const pumping = viewer.pump();
+
+      try {
+        await nextTurn();
+        assert.equal(viewer.error, error);
+        assert(
+          commands.some(
+            (item) =>
+              item.method === 'stop' && item.sessionId === sessionId && item.error === error,
+          ),
+        );
+      } finally {
+        viewer.recording = false;
+        await pumping;
+        pageState = {};
+        await viewer.close();
+      }
+    });
+    await t.test(
+      'reload drains accepted records before reporting an error from the page',
+      async () => {
+        const viewer = new FECaptureSession(1, 'owner');
+        const session = { id: 'reload-drain' };
+        const error = 'Захват остановлен при переполнении';
+        const chunk = { id: 1, from: 0, end: 2, text: '[]', done: true };
+        const acknowledgements = [];
+
+        viewer.session = session;
+        viewer.recording = true;
+        viewer.reloading = true;
+        pageState = { sessionId: session.id, recording: true, error };
+        onPull = (ack) => {
+          acknowledgements.push(ack);
+          if (ack) {
+            pageState.recording = false;
+
+            return {};
+          }
+
+          return { chunk };
+        };
+        try {
+          await viewer.pump();
+          assert(
+            commands.some(
+              (item) =>
+                item.method === 'ingest' &&
+                item.sessionId === session.id &&
+                item.json === chunk.text,
+            ),
+          );
+          assert.deepEqual(acknowledgements, [undefined, { id: 1, offset: 2 }]);
+          assert.match(viewer.error, /Захват остановлен при переполнении/);
+        } finally {
+          onPull = undefined;
+          pageState = {};
           await viewer.close();
         }
       },

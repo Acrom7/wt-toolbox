@@ -3,6 +3,7 @@ import { writeClipboard } from './writeClipboard.js';
 
 export class FEViewerClient {
   isRecording = false;
+  waitingForDirect = false;
   sessionId;
   onChange = () => {};
   disposed = false;
@@ -47,6 +48,7 @@ export class FEViewerClient {
     }
 
     this.isRecording = state.recording;
+    this.waitingForDirect = state.waitingForDirect === true;
     this.sessionId = state.sessionId;
     this.onChange(state.session, state.error);
 
